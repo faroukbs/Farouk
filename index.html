@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>Eyewear Virtual Try-On</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: #08090b; color: #fff; }
+    body { overflow: hidden; }
+    #app { position: fixed; inset: 0; background: #08090b; overflow: hidden; }
+    #stage { position: absolute; inset: 0; display: grid; place-items: center; background: #111; }
+    #video, #three { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    #video { transform: scaleX(-1); background: #111; }
+    #three { transform: scaleX(-1); pointer-events: none; }
+    #top { position: absolute; z-index: 5; top: env(safe-area-inset-top, 0px); left: 0; right: 0; padding: 18px; display: flex; justify-content: space-between; pointer-events: none; }
+    .pill { background: rgba(12,13,16,.62); border: 1px solid rgba(255,255,255,.14); backdrop-filter: blur(16px); border-radius: 999px; padding: 10px 14px; font-size: 13px; }
+    #bottom { position: absolute; z-index: 5; left: 0; right: 0; bottom: 0; padding: 12px 14px calc(14px + env(safe-area-inset-bottom, 0px)); background: linear-gradient(transparent, rgba(0,0,0,.88) 38%); }
+    #products { display: flex; gap: 10px; overflow-x: auto; padding: 18px 2px 8px; scrollbar-width: none; }
+    #products::-webkit-scrollbar { display:none; }
+    .product { min-width: 82px; height: 58px; border-radius: 15px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.10); color: white; font-size: 12px; padding: 7px; }
+    .product.active { border-color: #fff; background: rgba(255,255,255,.20); }
+    .mini-glasses { width: 60px; height: 25px; margin: 0 auto 2px; position: relative; }
+    .mini-glasses:before, .mini-glasses:after { content:""; position:absolute; top:3px; width:25px; height:18px; border:3px solid currentColor; border-radius:45%; }
+    .mini-glasses:before { left:1px; } .mini-glasses:after { right:1px; }
+    .mini-glasses i { position:absolute; left:26px; top:10px; width:9px; border-top:3px solid currentColor; }
+    #cta { width:100%; height:52px; border:0; border-radius:17px; background:#fff; color:#08090b; font-weight:700; font-size:16px; }
+    #start { position:absolute; z-index:10; inset:0; display:grid; place-items:center; padding:28px; background:radial-gradient(circle at 50% 35%, #252932, #08090b 70%); }
+    #card { width:min(430px,100%); padding:30px 24px 24px; border:1px solid rgba(255,255,255,.12); background:rgba(17,18,22,.82); backdrop-filter:blur(20px); border-radius:28px; text-align:center; }
+    #card .icon { width:76px; height:76px; margin:0 auto 18px; border-radius:24px; display:grid; place-items:center; background:#fff; color:#111; font-size:38px; }
+    h1 { margin:0 0 10px; font-size:29px; letter-spacing:-.7px; }
+    p { margin:0 0 22px; color:#aeb2bc; line-height:1.5; font-size:15px; }
+    #startBtn { width:100%; height:52px; border:0; border-radius:17px; font-size:16px; font-weight:700; }
+    #status { position:absolute; z-index:7; top:calc(env(safe-area-inset-top,0px) + 72px); left:50%; transform:translateX(-50%); padding:9px 13px; border-radius:999px; background:rgba(0,0,0,.52); backdrop-filter:blur(12px); color:#e7e8ec; font-size:12px; white-space:nowrap; opacity:0; transition:opacity .2s; }
+    #status.show { opacity:1; }
+    #error { display:none; margin-top:12px; color:#ff9d9d; font-size:13px; line-height:1.4; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="stage"><video id="video" autoplay muted playsinline></video><canvas id="three"></canvas></div>
+  <div id="top"><div class="pill">Virtual Try-On</div><div class="pill" id="modelName">Classic Black</div></div>
+  <div id="status">Looking for your face…</div>
+  <div id="bottom">
+    <div id="products">
+      <button class="product active" data-scale="1.00"><div class="mini-glasses"><i></i></div>Classic</button>
+      <button class="product" data-scale="1.05"><div class="mini-glasses"><i></i></div>Wide</button>
+      <button class="product" data-scale="0.94"><div class="mini-glasses"><i></i></div>Compact</button>
+    </div>
+    <button id="cta">Start camera</button>
+  </div>
+  <section id="start"><div id="card">
+    <div class="icon">👓</div>
+    <h1>Try the glasses on</h1>
+    <p>Allow camera access and the glasses will follow your face. This prototype uses on-device face tracking and the 3D glasses model created from your photos.</p>
+    <button id="startBtn">Enable camera</button><div id="error"></div>
+  </div></section>
+</div>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js';
+import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/loaders/GLTFLoader.js';
+import { FilesetResolver, FaceLandmarker } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/vision_bundle.mjs';
+
+const MODEL_URL='https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+const GLASSES_URL='./glasses.b64';
+const video=document.querySelector('#video'), canvas=document.querySelector('#three'), start=document.querySelector('#start');
+const startBtn=document.querySelector('#startBtn'), cta=document.querySelector('#cta'), status=document.querySelector('#status');
+const modelName=document.querySelector('#modelName'), errorBox=document.querySelector('#error');
+const productButtons=[...document.querySelectorAll('.product')];
+let stream=null, landmarker=null, glasses=null, running=false, lastVideoTime=-1, userScale=1, lastPose=null;
+
+const renderer=new THREE.WebGLRenderer({canvas,alpha:true,antialias:true,powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.setClearColor(0x000000,0);
+const scene=new THREE.Scene(), camera=new THREE.OrthographicCamera(-1,1,1,-1,0.01,100), root=new THREE.Group();
+scene.add(root); scene.add(new THREE.HemisphereLight(0xffffff,0x444444,2.2));
+const key=new THREE.DirectionalLight(0xffffff,2.5); key.position.set(1,2,3); scene.add(key);
+
+function resize(){const w=canvas.clientWidth||innerWidth,h=canvas.clientHeight||innerHeight;renderer.setSize(w,h,false);camera.left=-w/2;camera.right=w/2;camera.top=h/2;camera.bottom=-h/2;camera.updateProjectionMatrix();}
+addEventListener('resize',resize); resize();
+function showStatus(msg){status.textContent=msg;status.classList.add('show')} function hideStatus(){status.classList.remove('show')}
+function fail(msg){errorBox.textContent=msg;errorBox.style.display='block';startBtn.disabled=false;startBtn.textContent='Try again'}
+
+async function loadGlasses(){
+  const response=await fetch(GLASSES_URL,{cache:'no-store'}); if(!response.ok) throw new Error('Could not load glasses asset');
+  const b64=(await response.text()).trim(), binary=atob(b64), bytes=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++) bytes[i]=binary.charCodeAt(i);
+  const loader=new GLTFLoader();
+  return new Promise((resolve,reject)=>loader.parse(bytes.buffer,'',g=>resolve(g.scene),reject));
+}
+async function setupTracking(){
+  const vision=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm');
+  landmarker=await FaceLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:MODEL_URL,delegate:'GPU'},runningMode:'VIDEO',numFaces:1,outputFacialTransformationMatrixes:true,outputFaceBlendshapes:false});
+}
+function applyPose(matrixData){
+  if(!matrixData||matrixData.length!==16||!glasses)return;
+  const m=new THREE.Matrix4().fromArray(matrixData),s=0.1*userScale;
+  root.matrixAutoUpdate=false; root.matrix.copy(m); root.scale.set(s,s,s); root.position.y-=0.15;
+}
+async function startCamera(){
+  try{
+    errorBox.style.display='none';startBtn.disabled=true;startBtn.textContent='Starting…';showStatus('Loading face tracking…');
+    if(!landmarker) await setupTracking(); if(!glasses){glasses=await loadGlasses();root.add(glasses)}
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});
+    video.srcObject=stream;await video.play();start.style.display='none';cta.textContent='Camera on · tap glasses to switch';running=true;lastVideoTime=-1;hideStatus();requestAnimationFrame(loop);
+  }catch(e){console.error(e);fail(e?.name==='NotAllowedError'?'Camera permission was blocked. In iPhone Settings → Safari → Camera, allow this site and try again.':'Could not start the camera. Make sure the page is opened over HTTPS and try again.')}
+}
+function loop(){
+  if(!running)return;
+  if(video.readyState>=2&&video.currentTime!==lastVideoTime){
+    lastVideoTime=video.currentTime;
+    try{const result=landmarker.detectForVideo(video,performance.now()),matrix=result.facialTransformationMatrixes?.[0]?.data;
+      if(matrix){applyPose(matrix);lastPose=matrix;root.visible=true;hideStatus()} else if(!lastPose){root.visible=false;showStatus('Move your face into view')} else root.visible=true;
+    }catch(e){console.warn(e)}
+  }
+  renderer.render(scene,camera);requestAnimationFrame(loop);
+}
+startBtn.addEventListener('click',startCamera); cta.addEventListener('click',()=>{if(!running)startCamera()});
+productButtons.forEach((btn,i)=>btn.addEventListener('click',()=>{productButtons.forEach(b=>b.classList.remove('active'));btn.classList.add('active');userScale=Number(btn.dataset.scale)||1;modelName.textContent=['Classic Black','Wide Fit','Compact Fit'][i]||'Classic Black';if(lastPose)applyPose(lastPose)}));
+addEventListener('beforeunload',()=>stream?.getTracks().forEach(t=>t.stop()));
+</script>
+</body>
+</html>
